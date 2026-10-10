@@ -15,7 +15,7 @@ use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent, FastPathI
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::client_info::CompressionType;
-use ironrdp_pdu::rdp::headers::{BASIC_SECURITY_HEADER_SIZE, ShareDataPdu};
+use ironrdp_pdu::rdp::headers::{BASIC_SECURITY_HEADER_SIZE, ShareControlHeader, ShareControlPdu, ShareDataPdu};
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
 use ironrdp_pdu::rdp::refresh_rectangle::RefreshRectanglePdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
@@ -55,6 +55,9 @@ pub struct ActiveStage {
     damage_regions: Vec<InclusiveRectangle>,
     io_channel_id: u16,
     message_channel_id: Option<u16>,
+    /// Decrypted Demand Active PDU frame intercepted after activation, awaiting
+    /// pickup by the caller-driven Deactivation-Reactivation Sequence.
+    pending_demand_active: Option<Vec<u8>>,
     /// Standard RDP Security cryptor shared with the connector; `None` when
     /// the session was negotiated over TLS/CredSSP (or plaintext).
     security: Option<SharedSecurity>,
@@ -122,6 +125,7 @@ impl ActiveStageBuilder {
             damage_regions: Vec::new(),
             io_channel_id,
             message_channel_id,
+            pending_demand_active: None,
             security,
         }
     }
@@ -221,6 +225,20 @@ impl ActiveStage {
             }
             Action::X224 => {
                 let frame = self.decrypt_x224_frame(frame)?;
+
+                // A Demand Active PDU arriving after activation belongs to a
+                // server-initiated Deactivation-Reactivation Sequence (some servers
+                // re-send it at the winlogon → user desktop switch, without a
+                // preceding Deactivate-All, encrypted). The x224 processor only
+                // handles post-activation share-data traffic, so divert the frame
+                // to the caller: stash it as the input for a fresh activation
+                // sequence and surface DeactivateAll for the caller to drive the
+                // reactivation.
+                if let Some(demand_active) = Self::extract_post_activation_demand_active(&frame) {
+                    debug!("Demand Active PDU received after activation; diverting to reactivation");
+                    self.pending_demand_active = Some(demand_active);
+                    return Ok(vec![ActiveStageOutput::DeactivateAll]);
+                }
 
                 let x224_outputs = self.x224_processor.process(&frame, &mut self.bulk_decompressor)?;
                 let mut stage_outputs = Vec::new();
@@ -471,6 +489,30 @@ impl ActiveStage {
         match action {
             Action::FastPath => self.decrypt_fast_path_frame(frame),
             Action::X224 => self.decrypt_x224_frame(frame),
+        }
+    }
+
+    /// Takes the Demand Active PDU frame intercepted by [`Self::process`], if any.
+    ///
+    /// The returned frame is the decrypted, plaintext X.224 form: its receive
+    /// cipher stream has already been advanced, so feeding it to an activation
+    /// sequence must not decrypt it again.
+    pub fn take_pending_demand_active(&mut self) -> Option<Vec<u8>> {
+        self.pending_demand_active.take()
+    }
+
+    /// Returns the frame when it carries a Share Control Demand Active PDU.
+    fn extract_post_activation_demand_active(frame: &[u8]) -> Option<Vec<u8>> {
+        let pdu = decode::<X224<mcs::McsMessage<'_>>>(frame).ok()?;
+        let mcs::McsMessage::SendDataIndication(data) = pdu.0 else {
+            return None;
+        };
+
+        let header = decode::<ShareControlHeader>(&data.user_data).ok()?;
+        if matches!(header.share_control_pdu, ShareControlPdu::ServerDemandActive(_)) {
+            Some(frame.to_vec())
+        } else {
+            None
         }
     }
 

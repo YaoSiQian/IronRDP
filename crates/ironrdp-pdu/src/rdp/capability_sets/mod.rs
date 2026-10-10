@@ -102,8 +102,11 @@ impl<'de> Decode<'de> for ServerDemandActive {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let pdu = DemandActive::decode(src)?;
 
-        ensure_size!(in: src, size: 4);
-        let _session_id = src.read_u32();
+        // The 4-byte sessionId field is specified after the Demand Active body,
+        // but some servers omit it when the PDU is re-sent mid-session during a
+        // Deactivation-Reactivation Sequence. The field is ignored by the client
+        // either way, so accept both shapes.
+        let _session_id = if src.len() >= 4 { Some(src.read_u32()) } else { None };
 
         Ok(Self { pdu })
     }

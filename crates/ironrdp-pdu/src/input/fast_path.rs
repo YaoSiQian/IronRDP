@@ -1,8 +1,8 @@
 use bit_field::BitField as _;
 use bitflags::bitflags;
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
-    ensure_size, invalid_field_err, other_err,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
+    invalid_field_err, other_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
@@ -38,7 +38,17 @@ impl Encode for FastPathInputHeader {
         header.set_bits(6..8, self.flags.bits());
         dst.write_u8(header);
 
-        per::write_length(dst, cast_length!("len", self.data_length + self.size(), in: dst)?);
+        // The total frame length always takes the 2-byte form (0x80
+        // continuation flag + 15-bit length): this is what mstsc and FreeRDP
+        // send, and the only form the field-observed Windows server parser is
+        // proven to accept.
+        let total = self.data_length + self.size();
+        #[expect(clippy::as_conversions, reason = "masking keeps the high byte within 7 bits")]
+        let high = ((total >> 8) & 0x7F) as u8;
+        dst.write_u8(0x80 | high);
+        #[expect(clippy::as_conversions, reason = "masking keeps the low byte within 8 bits")]
+        let low = (total & 0xFF) as u8;
+        dst.write_u8(low);
         if self.num_events > 15 {
             dst.write_u8(self.num_events);
         }
@@ -52,7 +62,7 @@ impl Encode for FastPathInputHeader {
 
     fn size(&self) -> usize {
         let num_events_length = if self.num_events < 16 { 0 } else { 1 };
-        Self::FIXED_PART_SIZE + per::sizeof_length(self.data_length + num_events_length + 1) + num_events_length
+        Self::FIXED_PART_SIZE + 2 + num_events_length
     }
 }
 

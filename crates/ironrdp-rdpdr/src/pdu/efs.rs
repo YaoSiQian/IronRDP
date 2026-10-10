@@ -387,10 +387,23 @@ impl Capabilities {
             })
             .collect::<Vec<_>>();
 
-        let special_type_device_cap = capabilities
+        // Windows validates FILESYSTEM and SMARTCARD announces against the
+        // special-type device count the client declares here: a drive-only
+        // client answering 0 gets every filesystem announce rejected with
+        // STATUS_NOT_SUPPORTED. mstsc and FreeRDP echo the server's count.
+        let special_type_device_cap = server_capability
+            .capabilities
             .iter()
-            .filter(|capability| capability.header.cap_type == CapabilityType::Smartcard)
-            .fold(0u32, |count, _| count.saturating_add(1));
+            .find_map(|capability| match capability.capability_data {
+                CapabilityData::General(general) => Some(general.special_type_device_cap),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                capabilities
+                    .iter()
+                    .filter(|capability| capability.header.cap_type == CapabilityType::Smartcard)
+                    .count() as u32
+            });
 
         for capability in capabilities.iter_mut() {
             if let CapabilityData::General(general_capability) = &mut capability.capability_data {
@@ -1192,11 +1205,11 @@ impl DeviceAnnounceHeader {
         Self {
             device_type: DeviceType::Filesystem,
             device_id,
-            // With DRIVE_CAPABILITY_VERSION_02, DeviceData contains the complete
-            // null-terminated Unicode name. The field remains mandatory even
-            // though the server ignores it when DeviceDataLength is nonzero.
             preferred_dos_name: PreferredDosName::for_drive(&name),
-            device_data: utf16le_with_nul(&name),
+            // Windows reads DeviceData as a null-terminated ASCII string
+            // regardless of the drive capability version: UTF-16 data makes
+            // the share surface truncated to its first character.
+            device_data: name.as_bytes().iter().copied().chain(std::iter::once(0)).collect(),
         }
     }
 
@@ -1469,7 +1482,11 @@ pub enum DeviceType {
     /// RDPDR_DTYP_PRINT
     Print = 0x0000_0004,
     /// RDPDR_DTYP_FILESYSTEM
-    Filesystem = 0x0000_0008,
+    ///
+    /// MS-RDPEFS 2.2.1.3 assigns filesystem devices zero; servers ignore
+    /// announces carrying any other unrecognized type value when mounting
+    /// the redirected share under `\\tsclient`.
+    Filesystem = 0x0000_0000,
     /// RDPDR_DTYP_SMARTCARD
     Smartcard = 0x0000_0020,
 }
@@ -1492,7 +1509,7 @@ impl TryFrom<u32> for DeviceType {
             0x0000_0001 => Ok(DeviceType::Serial),
             0x0000_0002 => Ok(DeviceType::Parallel),
             0x0000_0004 => Ok(DeviceType::Print),
-            0x0000_0008 => Ok(DeviceType::Filesystem),
+            0x0000_0000 => Ok(DeviceType::Filesystem),
             0x0000_0020 => Ok(DeviceType::Smartcard),
             _ => Err(invalid_field_err!("try_from", "DeviceType", "invalid value")),
         }

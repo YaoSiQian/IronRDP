@@ -266,6 +266,9 @@ bitflags! {
         /// Used by the Short Format Name variant of the Format List Response PDU to indicate
         /// that the format names are in ASCII 8
         const ASCII_NAMES = 0x0004;
+        /// Used by the Format List PDU to indicate that the format names are in Unicode
+        /// (CB_FORMAT_UNICODE, [MS-RDPECLIP] 2.2.3.2.1)
+        const UNICODE_NAMES = 0x0008;
 
         const _ = !0;
     }

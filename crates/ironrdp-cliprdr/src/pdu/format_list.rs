@@ -222,6 +222,9 @@ impl ClipboardFormat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatList<'a> {
     use_ascii: bool,
+    /// All entries carry no name at all — the shape Windows rdpclip itself
+    /// broadcasts for standard formats (flags=0, id + empty UTF-16 name).
+    nameless: bool,
     encoded_formats: Cow<'a, [u8]>,
 }
 
@@ -233,6 +236,7 @@ impl IntoOwned for FormatList<'_> {
     fn into_owned(self) -> Self::Owned {
         OwnedFormatList {
             use_ascii: self.use_ascii,
+            nameless: self.nameless,
             encoded_formats: Cow::Owned(self.encoded_formats.into_owned()),
         }
     }
@@ -299,6 +303,7 @@ impl FormatList<'_> {
 
             Ok(Self {
                 use_ascii,
+                nameless: formats.iter().all(|f| f.name.is_none()),
                 encoded_formats: Cow::Owned(buffer),
             })
         } else {
@@ -316,6 +321,7 @@ impl FormatList<'_> {
 
             Ok(Self {
                 use_ascii,
+                nameless: formats.iter().all(|f| f.name.is_none()),
                 encoded_formats: Cow::Owned(buffer),
             })
         }
@@ -386,6 +392,7 @@ impl<'de> Decode<'de> for FormatList<'de> {
 
         Ok(Self {
             use_ascii,
+            nameless: false,
             encoded_formats: Cow::Borrowed(encoded_formats),
         })
     }
@@ -395,8 +402,17 @@ impl Encode for FormatList<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header_flags = if self.use_ascii {
             ClipboardPduFlags::ASCII_NAMES
-        } else {
+        } else if self.nameless {
+            // A nameless list is the exact shape Windows rdpclip itself
+            // broadcasts (flags=0, id + empty UTF-16 name); emitting the
+            // non-standard UNICODE_NAMES bit makes it register the formats
+            // as empty instead of delayed-rendered.
             ClipboardPduFlags::empty()
+        } else {
+            // Windows rdpclip requires the charset bit to match the payload: a
+            // list of null-terminated UTF-16 names sent with an empty msgFlags
+            // is silently dropped (no Format List Response is ever emitted).
+            ClipboardPduFlags::UNICODE_NAMES
         };
 
         let header =

@@ -182,8 +182,16 @@ impl RootDirectory {
         create_options: u32,
     ) -> Result<DirectoryHandle, OpenDirectoryError> {
         let mut nt_path = self.nt_path.clone();
-        open_directory_with_access_and_options(HANDLE::default(), &mut nt_path, desired_access, create_options)
-            .map(DirectoryHandle)
+        // The root NT path ends in the drive-letter symbolic link, so this open
+        // must be allowed to resolve it; only descendant opens keep OBJ_DONT_REPARSE.
+        open_directory_with_attributes(
+            HANDLE::default(),
+            &mut nt_path,
+            desired_access,
+            create_options,
+            OBJ_CASE_INSENSITIVE,
+        )
+        .map(DirectoryHandle)
     }
 
     fn open_root_file(&self, options: FileOpenOptions) -> Result<(FileHandle, usize), OpenFileError> {
@@ -196,7 +204,9 @@ impl RootDirectory {
             ..options
         };
         let mut nt_path = self.nt_path.clone();
-        open_file(HANDLE::default(), &mut nt_path, options)
+        // See open_traversal_root_with_options: the drive letter is itself a
+        // symbolic link and must be resolvable at this one boundary.
+        open_file_with_attributes(HANDLE::default(), &mut nt_path, options, OBJ_CASE_INSENSITIVE)
     }
 }
 
@@ -1119,6 +1129,22 @@ fn open_directory_with_access_and_options(
     desired_access: FILE_ACCESS_RIGHTS,
     create_options: u32,
 ) -> Result<HANDLE, OpenDirectoryError> {
+    open_directory_with_attributes(
+        root_directory,
+        name,
+        desired_access,
+        create_options,
+        OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+    )
+}
+
+fn open_directory_with_attributes(
+    root_directory: HANDLE,
+    name: &mut [u16],
+    desired_access: FILE_ACCESS_RIGHTS,
+    create_options: u32,
+    attributes: OBJECT_ATTRIBUTE_FLAGS,
+) -> Result<HANDLE, OpenDirectoryError> {
     let name_byte_len = name
         .len()
         .checked_mul(size_of::<u16>())
@@ -1133,7 +1159,7 @@ fn open_directory_with_access_and_options(
         Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).expect("OBJECT_ATTRIBUTES size fits in u32"),
         RootDirectory: root_directory,
         ObjectName: core::ptr::addr_of_mut!(unicode_name),
-        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        Attributes: attributes,
         SecurityDescriptor: core::ptr::null(),
         SecurityQualityOfService: core::ptr::null(),
     };
@@ -1143,7 +1169,8 @@ fn open_directory_with_access_and_options(
     // SAFETY:
     // - `name` and `unicode_name` stay alive for the entire call.
     // - `object_attributes`, `handle`, and `io_status` are valid writable pointers.
-    // - `OBJ_DONT_REPARSE` ensures object-manager resolution fails instead of traversing a reparse point.
+    // - Callers pass OBJ_DONT_REPARSE unless the name is the configured volume
+    //   root, whose drive letter is itself a symbolic link.
     let status = unsafe {
         NtCreateFile(
             core::ptr::addr_of_mut!(handle),
@@ -1171,6 +1198,20 @@ fn open_file(
     name: &mut [u16],
     options: FileOpenOptions,
 ) -> Result<(FileHandle, usize), OpenFileError> {
+    open_file_with_attributes(
+        root_directory,
+        name,
+        options,
+        final_file_object_attributes(options.create_options),
+    )
+}
+
+fn open_file_with_attributes(
+    root_directory: HANDLE,
+    name: &mut [u16],
+    options: FileOpenOptions,
+    attributes: OBJECT_ATTRIBUTE_FLAGS,
+) -> Result<(FileHandle, usize), OpenFileError> {
     let name_byte_len = name
         .len()
         .checked_mul(size_of::<u16>())
@@ -1187,7 +1228,7 @@ fn open_file(
         Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).expect("OBJECT_ATTRIBUTES size fits in u32"),
         RootDirectory: root_directory,
         ObjectName: core::ptr::addr_of_mut!(unicode_name),
-        Attributes: final_file_object_attributes(options.create_options),
+        Attributes: attributes,
         SecurityDescriptor: core::ptr::null(),
         SecurityQualityOfService: core::ptr::null(),
     };
@@ -1197,8 +1238,9 @@ fn open_file(
     // SAFETY:
     // - `name` and `unicode_name` stay alive for the entire call.
     // - `object_attributes`, `handle`, and `io_status` are valid writable pointers.
-    // - `OBJ_DONT_REPARSE` prevents reparse-point traversal outside the volume
-    //   unless the caller explicitly opens the final reparse-point object.
+    // - Callers pass OBJ_DONT_REPARSE for names below the volume root, which
+    //   prevents reparse-point traversal outside the volume, except for the
+    //   root itself whose drive letter is a symbolic link.
     let status = unsafe {
         NtCreateFile(
             core::ptr::addr_of_mut!(handle),

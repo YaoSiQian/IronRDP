@@ -314,6 +314,11 @@ impl Processor {
                 Ok(Vec::new())
             }
             IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
+            // Normally diverted upstream by `ActiveStage::process` (which stashes
+            // the decrypted frame for the reactivation driver before this processor
+            // runs); reaching this arm means that diversion did not happen, and the
+            // PDU cannot be acted upon here.
+            IoChannelPdu::DemandActive(_) => Ok(Vec::new()),
         }
     }
 

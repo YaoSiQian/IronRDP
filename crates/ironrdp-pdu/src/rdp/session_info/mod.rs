@@ -103,7 +103,7 @@ pub enum InfoType {
     Logon = 0x0000_0000,
     LogonLong = 0x0000_0001,
     PlainNotify = 0x0000_0002,
-    LogonExtended = 0x0000_0003,
+    LogonExtended = 0x0000_0008,
 }
 
 impl InfoType {

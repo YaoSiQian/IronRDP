@@ -108,18 +108,21 @@ pub fn encode_share_data(
 ) -> EncodeResult<usize> {
     let share_data_header = ShareDataHeader {
         share_data_pdu: pdu,
-        stream_priority: StreamPriority::Medium,
+        stream_priority: StreamPriority::Low, // mstsc sends 1 on the wire
         compression_flags: CompressionFlags::empty(),
         compression_type: client_info::CompressionType::K8, // ignored if CompressionFlags::empty()
     };
 
-    encode_share_control(
-        initiator_id,
-        channel_id,
+    let share_control_header = ShareControlHeader {
+        share_control_pdu: ShareControlPdu::Data(share_data_header),
+        // mstsc puts user_id-2 in PDUSource (byte-verified against mstsc
+        // captures). TermService silently drops a TS_INPUT_PDU whose PDUSource
+        // is the raw MCS user id — accepted at transport but never injected.
+        // Sync/FontList tolerate any source; input must match mstsc.
+        pdu_source: initiator_id.saturating_sub(2),
         share_id,
-        ShareControlPdu::Data(share_data_header),
-        buf,
-    )
+    };
+    crate::mcs::encode_send_data_request(initiator_id, channel_id, &share_control_header, buf)
 }
 
 /// A decoded Share Control PDU together with its channel routing information.
@@ -207,6 +210,12 @@ pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<ShareDa
 pub enum IoChannelPdu {
     Data(ShareDataCtx),
     DeactivateAll(ServerDeactivateAll),
+    /// Server Demand Active PDU.
+    ///
+    /// Servers re-send this PDU mid-session during a Deactivation-Reactivation
+    /// Sequence; surfacing it here (instead of failing decode) lets the session
+    /// layer divert it into that sequence.
+    DemandActive(ServerDemandActive),
     /// Server Initiate Multitransport Request PDU.
     ///
     /// Received when the server wants the client to establish a sideband UDP transport.
@@ -239,6 +248,7 @@ pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<IoChann
 
     match ctx.pdu {
         ShareControlPdu::ServerDeactivateAll(deactivate_all) => Ok(IoChannelPdu::DeactivateAll(deactivate_all)),
+        ShareControlPdu::ServerDemandActive(demand_active) => Ok(IoChannelPdu::DemandActive(demand_active)),
         ShareControlPdu::Data(share_data_header) => {
             let share_data_ctx = ShareDataCtx {
                 initiator_id: ctx.initiator_id,
@@ -467,7 +477,14 @@ impl Encode for ShareDataHeader {
 
             write_padding!(dst, 1);
             dst.write_u8(self.stream_priority.as_u8());
-            dst.write_u16(cast_length!("uncompressedLength", self.share_data_pdu.size(), in: dst)?);
+            // mstsc and FreeRDP write body+4 (== bytes following this field,
+            // i.e. type2 + compression fields + body) here, not the bare body
+            // size; legacy servers slice input PDUs with this field.
+            dst.write_u16(cast_length!(
+                "uncompressedLength",
+                self.share_data_pdu.size() + 4,
+                in: dst
+            )?);
             dst.write_u8(self.share_data_pdu.share_header_type().as_u8());
             dst.write_u8(compression_flags_with_type);
             dst.write_u16(0); // compressed length
