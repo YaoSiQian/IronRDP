@@ -792,6 +792,15 @@ impl SvcProcessor for Rdpdr {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        trace!(
+            "RDPDRRX len={} hex={}",
+            payload.len(),
+            payload
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         let mut src = ReadCursor::new(payload);
         let header = SharedHeader::decode(&mut src).map_err(|e| decode_err!(e))?;
         if matches!(header.packet_id, PacketId::PrnCacheData | PacketId::PrnUsingXps) {
@@ -802,12 +811,31 @@ impl SvcProcessor for Rdpdr {
             return Ok(vec![]);
         }
 
-        let pdu = RdpdrPdu::decode_body(header, &mut src).map_err(|e| decode_err!(e))?;
+        let pdu = match RdpdrPdu::decode_body(header, &mut src) {
+            Ok(pdu) => pdu,
+            Err(e) => {
+                trace!("RDPDRDECODE err={e:?}");
+                return Err(decode_err!(e));
+            }
+        };
         debug!("Received {:?}", pdu);
 
         match pdu {
             RdpdrPdu::VersionAndIdPdu(pdu) if pdu.kind == VersionAndIdPduKind::ServerAnnounceRequest => {
-                self.handle_server_announce(pdu)
+                match self.handle_server_announce(pdu) {
+                    Ok(msgs) => Ok(msgs),
+                    Err(e) => {
+                        let mut chain = format!("{e}");
+                        let mut src = std::error::Error::source(&e);
+                        while let Some(s) = src {
+                            chain.push_str(" <- ");
+                            chain.push_str(&s.to_string());
+                            src = s.source();
+                        }
+                        trace!("RDPDRANNOUNCE err={chain}");
+                        Err(e)
+                    }
+                }
             }
             RdpdrPdu::CoreCapability(pdu) if pdu.kind == CoreCapabilityKind::ServerCoreCapabilityRequest => {
                 self.handle_server_capability(pdu)

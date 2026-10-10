@@ -16,7 +16,7 @@ use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{
     StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages_with_max_chunk_len,
 };
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::{SessionError, SessionErrorExt as _, SessionResult, reason_err};
 
@@ -239,7 +239,12 @@ impl Processor {
         } else {
             let maximum_chunk_size = self.static_channels.maximum_chunk_size();
             if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
+                let channel_name = svc.channel_name();
                 let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
+                trace!(
+                    "SVCDISP ch={channel_id} name={channel_name:?} resps={} chunk={maximum_chunk_size}",
+                    response_pdus.len()
+                );
                 process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id, maximum_chunk_size)
                     .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
             } else {
@@ -342,10 +347,12 @@ impl Processor {
             }
             pdu => (pdu, compression_flags),
         };
+        trace!("PDUIN {:?}", pdu.as_short_name());
 
         match pdu {
             ShareDataPdu::SaveSessionInfo(session_info) => {
                 debug!("Got Session Save Info PDU: {session_info:?}");
+                trace!("SAVESESSION raw={session_info:#?}");
                 let mut outputs = vec![ProcessorOutput::SaveSessionInfo {
                     logon_complete: is_logon_complete(&session_info),
                 }];
@@ -376,10 +383,12 @@ impl Processor {
             ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
                 ProtocolIndependentCode::None,
             ))) => {
+                trace!("SETERR None");
                 debug!("Received None server error");
                 Ok(Vec::new())
             }
             ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => {
+                trace!("SETERR {e:?}");
                 // This is a part of server-side graceful disconnect procedure defined
                 // in [MS-RDPBCGR].
                 //

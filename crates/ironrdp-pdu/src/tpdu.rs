@@ -164,7 +164,21 @@ impl TpduHeader {
             dst.write_u8(EOT_BYTE); // EOT
         } else {
             ensure_size!(in: dst, size: 5);
-            dst.write_u16(0); // DST-REF
+            // First byte of DST-REF doubles as the X.224 CR TOR byte:
+            // bit 0x01 = requested console session (mstsc /admin). Legacy
+            // servers honor this to resume the console session instead of
+            // creating a new remote one. Gate behind IRONRDP_CONSOLE so
+            // default behavior is byte-identical to before.
+            let tor = if std::env::var("IRONRDP_CONSOLE").as_deref() == Ok("1") {
+                0x01
+            } else {
+                0
+            };
+            if tor != 0 {
+                eprintln!("X224CR TOR=1 (console session requested)");
+            }
+            dst.write_u8(tor); // TOR / DST-REF high
+            dst.write_u8(0); // DST-REF low
             dst.write_u16(0); // SRC-REF
             dst.write_u8(0); // Class 0
         }

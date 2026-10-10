@@ -9,7 +9,7 @@ use ironrdp_rdpdr::pdu::efs::{
     ServerDriveQueryInformationRequest, ServerDriveSetInformationRequest,
 };
 use ironrdp_svc::SvcMessage;
-use tracing::debug;
+use tracing::{debug, trace};
 use windows::Wdk::Storage::FileSystem::FILE_BASIC_INFORMATION as NativeFileBasicInformation;
 
 use super::backend::{OpenFile, WindowsRdpdrBackend};
@@ -72,16 +72,22 @@ const MAX_STATIC_IO_SIZE: usize = 1024 * 1024;
 
 pub(crate) fn create(backend: &mut WindowsRdpdrBackend, req: DeviceCreateRequest) -> PduResult<Vec<SvcMessage>> {
     let response = match create_inner(backend, &req) {
-        Ok((file_id, information)) => DeviceCreateResponse {
-            device_io_reply: DeviceIoResponse::new(req.device_io_request, NtStatus::SUCCESS),
-            file_id,
-            information,
-        },
-        Err(status) => DeviceCreateResponse {
-            device_io_reply: DeviceIoResponse::new(req.device_io_request, status),
-            file_id: 0,
-            information: Information::empty(),
-        },
+        Ok((file_id, information)) => {
+            trace!("RDPDRCREATE path={:?} -> SUCCESS file_id={file_id}", req.path);
+            DeviceCreateResponse {
+                device_io_reply: DeviceIoResponse::new(req.device_io_request, NtStatus::SUCCESS),
+                file_id,
+                information,
+            }
+        }
+        Err(status) => {
+            trace!("RDPDRCREATE path={:?} -> ERR {status:?}", req.path);
+            DeviceCreateResponse {
+                device_io_reply: DeviceIoResponse::new(req.device_io_request, status),
+                file_id: 0,
+                information: Information::empty(),
+            }
+        }
     };
 
     Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCreateResponse(response))])
@@ -160,6 +166,10 @@ pub(crate) fn query_information(
         Ok((status, buffer)) => (status, Some(buffer)),
         Err(status) => (status, None),
     };
+    trace!(
+        "RDPDRQUERY file_id={} class={information_class} status={status:?}",
+        req.device_io_request.file_id
+    );
     let response_length = buffer.as_ref().map_or(0, FileInformationClass::size);
     debug!(
         information_class,

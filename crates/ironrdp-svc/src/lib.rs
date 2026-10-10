@@ -491,6 +491,13 @@ impl ChunkProcessor {
 
                 flags |= message.flags;
 
+                // Probe hook: Windows servers send cliprdr frames with plain
+                // FIRST|LAST (0x3); test whether rdpclip rejects SHOW_PROTOCOL
+                // set on the client side.
+                if std::env::var("IRONRDP_CLIP_FLAGS").as_deref() == Ok("3") {
+                    flags.remove(ChannelFlags::SHOW_PROTOCOL);
+                }
+
                 ChannelPduHeader {
                     length: ironrdp_core::cast_int!(ChannelPduHeader::NAME, "length", total_len)?,
                     flags,

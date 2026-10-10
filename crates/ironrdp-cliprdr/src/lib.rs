@@ -600,7 +600,11 @@ impl<R: Role> Cliprdr<R> {
         transfer_timeout: core::time::Duration,
     ) -> Self {
         // This CLIPRDR implementation supports long format names by default
-        let flags = ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES | backend.client_capabilities();
+        let mut flags = ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES | backend.client_capabilities();
+        // Probe hook: claim and send short format names instead.
+        if std::env::var("IRONRDP_CLIP_SHORTNAMES").as_deref() == Ok("1") {
+            flags.remove(ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES);
+        }
 
         Self {
             backend,
@@ -641,6 +645,12 @@ impl<R: Role> Cliprdr<R> {
     }
 
     fn build_format_list(&self, formats: &[ClipboardFormat]) -> EncodeResult<FormatList<'static>> {
+        // Probe hook: mstsc announces standard formats with
+        // CB_ASCII_NAMES and single-byte names; compare guest registration
+        // behavior against the UTF-16 + UNICODE_NAMES-bit default.
+        if std::env::var("IRONRDP_CLIP_ASCII").as_deref() == Ok("1") {
+            return FormatList::new_ascii(formats, self.are_long_format_names_enabled());
+        }
         FormatList::new_unicode(formats, self.are_long_format_names_enabled())
     }
 
@@ -915,11 +925,19 @@ impl<R: Role> Cliprdr<R> {
                 CliprdrState::Initialization => {
                     // During initialization state, first copy action is synthetic and should be sent along with
                     // capabilities and temporary directory PDUs.
-                    pdus.push(ClipboardPdu::Capabilities(self.capabilities.clone()));
-                    pdus.push(ClipboardPdu::TemporaryDirectory(
-                        ClientTemporaryDirectory::new(self.backend.temporary_directory())
-                            .map_err(|e| encode_err!(e))?,
-                    ));
+                    // Probe hooks: bisect which init PDU Windows
+                    // rdpclip chokes on. mode 2 = list only, mode 6 = caps+list,
+                    // mode 8 = tempdir+list.
+                    let mode = std::env::var("IRONRDP_CLIP_MODE").as_deref().unwrap_or("").to_owned();
+                    if mode != "2" && mode != "8" {
+                        pdus.push(ClipboardPdu::Capabilities(self.capabilities.clone()));
+                    }
+                    if mode != "2" && mode != "6" {
+                        pdus.push(ClipboardPdu::TemporaryDirectory(
+                            ClientTemporaryDirectory::new(self.backend.temporary_directory())
+                                .map_err(|e| encode_err!(e))?,
+                        ));
+                    }
                     pdus.push(ClipboardPdu::FormatList(
                         self.build_format_list(available_formats).map_err(|e| encode_err!(e))?,
                     ));
@@ -937,7 +955,11 @@ impl<R: Role> Cliprdr<R> {
     /// [`FormatDataResponse`] for this paste instead — not an error, which
     /// embedders commonly propagate out of the session loop.
     pub fn initiate_paste(&mut self, requested_format: ClipboardFormatId) -> PduResult<CliprdrSvcMessages<R>> {
-        self.require_ready("initiate_paste")?;
+        // Probe hook: allow a bare Format Data Request before the
+        // handshake completes, to test raw server responsiveness.
+        if std::env::var("IRONRDP_CLIP_MODE").as_deref() != Ok("4") {
+            self.require_ready("initiate_paste")?;
+        }
 
         if self.pending_format_data_requests.len() >= MAX_PENDING_FORMAT_DATA_REQUESTS {
             warn!(

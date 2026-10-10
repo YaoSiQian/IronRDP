@@ -21,6 +21,14 @@ use crate::palette::Palette;
 use crate::pointer::PointerCache;
 use crate::{SessionError, SessionErrorExt as _, SessionErrorKind, SessionResult, reason_err, rfx};
 
+/// Opt-in per-applied-bitmap content dump (IRONRDP_TRACE_UPDATES=1): one
+/// eprintln per decoded bitmap rectangle with its geometry and a coarse
+/// content fingerprint, so wire-level update flows can be audited end to end.
+fn trace_bitmap_content() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("IRONRDP_TRACE_UPDATES").as_deref() == Ok("1"))
+}
+
 /// A bounded category for a failed Fast-Path bulk decompression operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BulkDecompressionErrorKind {
@@ -519,6 +527,25 @@ impl Processor {
                     }
                 }
             };
+
+            if trace_bitmap_content() {
+                // `buf` holds the decoded native-format pixels for compressed
+                // and padded-raw updates; the unpadded raw path consumes
+                // `bitmap_data` directly, leaving `buf` empty.
+                let data: &[u8] = if buf.is_empty() { update.bitmap_data } else { &buf };
+                let nonzero = data.iter().filter(|&&b| b != 0).count();
+                let sum: u64 = data.iter().map(|&b| u64::from(b)).sum();
+                eprintln!(
+                    "APPLIED rect={:?} bpp={} w={} h={} bytes={} nonzero={} sum={}",
+                    update_rectangle,
+                    update.bits_per_pixel,
+                    update.width,
+                    update.height,
+                    data.len(),
+                    nonzero,
+                    sum,
+                );
+            }
 
             if let Some(update_rectangle) = applied_rectangle {
                 match update_kind {
