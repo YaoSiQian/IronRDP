@@ -14,6 +14,8 @@ pub mod sync;
 pub mod unicode;
 pub mod unused;
 
+pub use self::mouse::PointerFlags;
+
 pub use self::mouse::MousePdu;
 pub use self::mouse_rel::MouseRelPdu;
 pub use self::mouse_x::MouseXPdu;
@@ -88,18 +90,40 @@ impl InputEvent {
     const FIXED_PART_SIZE: usize = 4 /* eventTime */ + 2 /* eventType */;
 }
 
+/// Legacy (RDP 5.x-era) terminal servers parse slow-path mouse with the
+/// legacy constants: TS_INPUT_EVENT_MOUSE = 0x8001 (the legacy slow-path
+/// switch only accepts SYNC/SCANCODE/VKPACKET/MOUSE/MOUSEX — anything else,
+/// including 0x0004 and 0x0001, hits the default branch and disconnects the
+/// session). Modern TermService accepts the same 0x8001; the legacy switch
+/// only guards keyboard release-flag remapping (legacy
+/// TS_KBDFLAGS_RELEASE=0x8000, modern 0x0001). Selected per deployment
+/// before connecting.
+static LEGACY_INPUT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn set_legacy_input(on: bool) {
+    LEGACY_INPUT.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn legacy_input() -> bool {
+    LEGACY_INPUT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 impl Encode for InputEvent {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(0); // event time is ignored by a server
-        dst.write_u16(InputEventType::from(self).as_u16());
+
+        let event_type = InputEventType::from(self);
+        dst.write_u16(event_type.as_u16());
 
         match self {
             Self::Sync(pdu) => pdu.encode(dst),
             Self::Unused(pdu) => pdu.encode(dst),
             Self::ScanCode(pdu) => pdu.encode(dst),
             Self::Unicode(pdu) => pdu.encode(dst),
+            // Slow-path TS_MOUSE_EVENT is (pointerFlags, x, y) as three u16s —
+            // same wire layout MousePdu already encodes.
             Self::Mouse(pdu) => pdu.encode(dst),
             Self::MouseX(pdu) => pdu.encode(dst),
             Self::MouseRel(pdu) => pdu.encode(dst),
@@ -152,7 +176,11 @@ enum InputEventType {
     Unused = 0x0002,
     ScanCode = 0x0004,
     Unicode = 0x0005,
+    // 0x8001 = INPUT_EVENT_MOUSE (FreeRDP, MS-RDPBCGR 2.2.8.1.2.1.1
+    // 0x8000-range); the only mouse value both legacy and modern servers
+    // accept — 0x0001 hits the legacy slow-path switch's default branch.
     Mouse = 0x8001,
+    // INPUT_EVENT_MOUSEX is 0x8002 per FreeRDP/MS-RDPBCGR.
     MouseX = 0x8002,
     MouseRel = 0x8004,
 }

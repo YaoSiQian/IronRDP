@@ -314,6 +314,15 @@ pub struct Config {
     /// [`DrdynvcClient::with_dynamic_channel`]: https://docs.rs/ironrdp-dvc/latest/ironrdp_dvc/struct.DrdynvcClient.html#method.with_dynamic_channel
     /// [`GraphicsPipelineClient`]: https://docs.rs/ironrdp-egfx/latest/ironrdp_egfx/client/struct.GraphicsPipelineClient.html
     pub support_dyn_vc_gfx_protocol: bool,
+
+    /// Restrict the Client Info PDU flag set and identity fields to the
+    /// compact set used by RDP 5.x-era clients (rdesktop/mstsc of that era):
+    /// MOUSE | DISABLE_CTRL_ALT_DEL | UNICODE | MAXIMIZE_SHELL |
+    /// ENABLE_WINDOWS_KEY (+ AUTOLOGON). Drops the bits those clients never
+    /// sent (LOGON_NOTIFY, LOGON_ERRORS, MOUSE_HAS_WHEEL,
+    /// NO_AUDIO_PLAYBACK), which some legacy servers copy into the
+    /// WINSTATIONCLIENT structure consulted by winlogon at desktop startup.
+    pub legacy_info_flags: bool,
 }
 
 ironrdp_core::assert_impl!(Config: Send, Sync);

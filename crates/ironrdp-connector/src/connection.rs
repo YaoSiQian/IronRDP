@@ -2143,15 +2143,27 @@ fn create_client_info_pdu(
     };
 
     // Default flags for all sessions
-    let mut flags = ClientInfoFlags::MOUSE
-        | ClientInfoFlags::MOUSE_HAS_WHEEL
-        | ClientInfoFlags::UNICODE
-        | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
-        | ClientInfoFlags::LOGON_NOTIFY
-        | ClientInfoFlags::LOGON_ERRORS
-        | ClientInfoFlags::VIDEO_DISABLE
-        | ClientInfoFlags::ENABLE_WINDOWS_KEY
-        | ClientInfoFlags::MAXIMIZE_SHELL;
+    let mut flags = if config.legacy_info_flags {
+        // RDP 5.x-era client flag set (see Config::legacy_info_flags).
+        ClientInfoFlags::MOUSE
+            | ClientInfoFlags::UNICODE
+            | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
+            | ClientInfoFlags::ENABLE_WINDOWS_KEY
+            | ClientInfoFlags::MAXIMIZE_SHELL
+    } else {
+        ClientInfoFlags::MOUSE
+            | ClientInfoFlags::MOUSE_HAS_WHEEL
+            | ClientInfoFlags::UNICODE
+            | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
+            | ClientInfoFlags::LOGON_NOTIFY
+            | ClientInfoFlags::LOGON_ERRORS
+            // INFO_VIDEO_DISABLE removed: it asks the server to stop sending video
+            // output entirely. Modern TermService ignores it, but legacy
+            // implementations honor it, leaving reconnects with a permanently black
+            // framebuffer — fatal for any client that needs pixels.
+            | ClientInfoFlags::ENABLE_WINDOWS_KEY
+            | ClientInfoFlags::MAXIMIZE_SHELL
+    };
 
     if config.autologon {
         flags |= ClientInfoFlags::AUTOLOGON;
@@ -2161,7 +2173,7 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
     }
 
-    if !config.enable_audio_playback {
+    if !config.enable_audio_playback && !config.legacy_info_flags {
         flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
     }
 

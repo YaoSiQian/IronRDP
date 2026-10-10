@@ -562,7 +562,16 @@ fn create_client_confirm_active(
             }; BITMAP_CACHE_ENTRIES_NUM],
         }),
         CapabilitySet::Input(Input {
-            input_flags: InputFlags::all(),
+            // Legacy mode sends slow-path input exclusively; advertising
+            // FASTPATH_INPUT alongside slow-path PDUs is treated as a protocol
+            // violation by legacy servers (a click frame then resets the
+            // connection; legacy-proven capability sets advertise none of these
+            // bits). Mask them so the caps match the wire.
+            input_flags: if ironrdp_pdu::input::legacy_input() {
+                InputFlags::all() - (InputFlags::FASTPATH_INPUT | InputFlags::FASTPATH_INPUT_2)
+            } else {
+                InputFlags::all()
+            },
             keyboard_layout: 0,
             keyboard_type: Some(config.keyboard_type),
             keyboard_subtype: config.keyboard_subtype,

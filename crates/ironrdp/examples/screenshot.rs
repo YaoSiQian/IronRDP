@@ -217,6 +217,7 @@ fn build_config(
         enable_tls: false, // This example does not expose any frontend.
         enable_credssp: false,
         enable_standard_rdp_security: true,
+        legacy_info_flags: false,
         keyboard_type: KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0,
