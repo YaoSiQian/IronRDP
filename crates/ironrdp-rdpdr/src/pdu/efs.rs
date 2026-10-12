@@ -1192,11 +1192,11 @@ impl DeviceAnnounceHeader {
         Self {
             device_type: DeviceType::Filesystem,
             device_id,
-            // With DRIVE_CAPABILITY_VERSION_02, DeviceData contains the complete
-            // null-terminated Unicode name. The field remains mandatory even
-            // though the server ignores it when DeviceDataLength is nonzero.
+            // Windows reads DeviceData as a null-terminated ASCII string
+            // regardless of the drive capability version: UTF-16 data makes
+            // the share surface truncated to its first character.
             preferred_dos_name: PreferredDosName::for_drive(&name),
-            device_data: utf16le_with_nul(&name),
+            device_data: name.as_bytes().iter().copied().chain(std::iter::once(0)).collect(),
         }
     }
 
